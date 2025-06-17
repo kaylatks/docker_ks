@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    restart: always
+    ports:
+      - "9870:9870"  # NameNode Web UI
+      - "9000:9000"  # For HDFS client connections (fs.defaultFS)
+    volumes:
+      - hadoop_namenode_data:/hadoop/dfs/name
+    environment:
+      - CLUSTER_NAME=test
+    env_file:
+      - ./hadoop.env # Common Hadoop environment variables
+    networks:
+      - hadoop-spark-net
+
+  datanode1: # You can add more datanodes (datanode2, datanode3...)
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode1
+    restart: always
+    depends_on:
+      - namenode
+    volumes:
+      - hadoop_datanode1_data:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870" # Wait for namenode UI to be up
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hadoop-spark-net
+
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: resourcemanager
+    restart: always
+    depends_on:
+      - namenode
+      - datanode1
+    ports:
+      - "8088:8088"  # YARN ResourceManager Web UI
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870 datanode1:9864" # datanode webui is 9864
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hadoop-spark-net
+
+  nodemanager1: # You can add more nodemanagers
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: nodemanager1
+    restart: always
+    depends_on:
+      - namenode
+      - resourcemanager
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870 resourcemanager:8088"
+    env_file:
+      - ./hadoop.env
+    networks:
+      - hadoop-spark-net
+
+  # This Spark master image will be used as a client to submit jobs to YARN
+  # It also provides spark-shell, spark-submit utilities.
+  # It can also run a Spark standalone cluster if you want, but YARN is the focus.
+  spark-client:
+    image: bde2020/spark-master:3.3.0-hadoop3.3 # Spark 3.3.0, Hadoop 3.3
+    container_name: spark-client # Renamed for clarity for YARN submission
+    depends_on:
+      - namenode
+      - resourcemanager
+      - nodemanager1
+    ports:
+      - "8090:8080"  # Spark Standalone Master UI (if you enable it, different from YARN UI)
+      - "7077:7077"  # Spark Standalone Master RPC (if you enable it)
+      - "4040:4040"  # Default Spark Application UI for the *first* app (often proxied)
+    environment:
+      - HADOOP_CONF_DIR=/etc/hadoop/conf # For Spark to find Hadoop configs
+      # - SPARK_MODE=master # Uncomment if you want this to also be a standalone master
+      # For History Server if you add it:
+      # - SPARK_EVENTLOG_ENABLED=true
+      # - SPARK_HISTORY_OPTS="-Dspark.history.fs.logDirectory=hdfs://namenode:9000/spark-logs"
+    env_file:
+      - ./hadoop.env # Ensures Spark is aware of HDFS/YARN
+    volumes:
+      - ./conf:/etc/hadoop/conf # <-- Mount your Hadoop configs here
+      - ./apps:/opt/spark-apps/ # Mount your PySpark application scripts
+      - ./data_io:/opt/data_io/ # Mount for local data input/output by the driver
+    networks:
+      - hadoop-spark-net
+
+  # Optional: Spark History Server
+  # spark-history-server:
+  #   image: bde2020/spark-history-server:3.3.0-hadoop3.3
+  #   container_name: spark-history-server
+  #   depends_on:
+  #     - namenode
+  #   ports:
+  #     - "18080:18080"
+  #   volumes:
+  #     - ./spark_event_logs_local:/tmp/spark-events # Local mount if HDFS not working for logs
+  #   environment:
+  #     - SPARK_HISTORY_OPTS="-Dspark.history.fs.logDirectory=hdfs://namenode:9000/spark-logs -Dspark.history.ui.port=18080"
+  #   networks:
+  #     - hadoop-spark-net
+
+volumes:
+  hadoop_namenode_data:
+  hadoop_datanode1_data:
+  # spark_event_logs_local: # For history server if using local log storage
+
+networks:
+  hadoop-spark-net:
+    driver: bridge
